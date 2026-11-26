@@ -24,7 +24,7 @@ import java.util.concurrent.*;
 
 public class PhotoActivity extends ComponentActivity {
  PreviewView preview; androidx.camera.core.Camera camera; ImageCapture capture; Button shutter; TextView label;
- SeekBar slider; float wanted=1,extra=1; int max, generation; boolean busy,ready,closing;
+ SeekBar slider; float wanted=1,extra=1; int max, generation; boolean busy,ready; volatile boolean closing; boolean hardwarePending; float lastRequested=Float.NaN;
  final ExecutorService worker=Executors.newSingleThreadExecutor();
  final Executor main=command->runOnUiThread(command);
  int dp(float n){return (int)(n*getResources().getDisplayMetrics().density+.5f);}
@@ -32,22 +32,25 @@ public class PhotoActivity extends ComponentActivity {
    LinearLayout root=new LinearLayout(this);root.setOrientation(1);root.setGravity(Gravity.CENTER);root.setBackgroundColor(Color.BLACK);setContentView(root);
    FrameLayout frame=new FrameLayout(this);frame.setClipChildren(true);frame.setClipToPadding(true);
    root.addView(frame,new LinearLayout.LayoutParams(-1,0,1));
-   preview=new PreviewView(this);preview.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);preview.setScaleType(PreviewView.ScaleType.FIT_CENTER);frame.addView(preview,new FrameLayout.LayoutParams(-1,-1));
+   preview=new PreviewView(this);preview.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);preview.setScaleType(PreviewView.ScaleType.FILL_CENTER);frame.addView(preview,new FrameLayout.LayoutParams(-1,-1));
    label=new TextView(this);label.setTextColor(Color.WHITE);label.setTextSize(24);label.setGravity(Gravity.CENTER);label.setText("1.0×");root.addView(label);
    slider=new SeekBar(this);slider.setMax(1000);root.addView(slider,new LinearLayout.LayoutParams(-1,dp(56)));
    shutter=new Button(this);shutter.setText("Capture");shutter.setEnabled(false);root.addView(shutter,new LinearLayout.LayoutParams(-1,dp(64)));
    slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onStartTrackingTouch(SeekBar s){} public void onStopTrackingTouch(SeekBar s){} public void onProgressChanged(SeekBar s,int p,boolean user){if(user){wanted=ZoomMath.fromProgress(p,max);applyZoom();}}});
    shutter.setOnClickListener(v->take());
-   if(checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)startCamera();else requestPermissions(new String[]{Manifest.permission.CAMERA},1);
+   if(checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)preview.post(this::startCamera);else requestPermissions(new String[]{Manifest.permission.CAMERA},1);
  }
- @Override public void onRequestPermissionsResult(int r,String[] p,int[] g){super.onRequestPermissionsResult(r,p,g);if(r==1&&g.length>0&&g[0]==PackageManager.PERMISSION_GRANTED)startCamera();else finish();}
+ @Override public void onRequestPermissionsResult(int r,String[] p,int[] g){super.onRequestPermissionsResult(r,p,g);if(r==1&&g.length>0&&g[0]==PackageManager.PERMISSION_GRANTED)preview.post(this::startCamera);else finish();}
  void startCamera(){
    ListenableFuture<ProcessCameraProvider> f=ProcessCameraProvider.getInstance(this);
    f.addListener(()->{if(closing)return;try{
      ProcessCameraProvider provider=f.get(); Preview p=new Preview.Builder().setTargetAspectRatio(AspectRatio.RATIO_4_3).build();
      capture=new ImageCapture.Builder().setTargetAspectRatio(AspectRatio.RATIO_4_3).setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build();
      p.setSurfaceProvider(preview.getSurfaceProvider());provider.unbindAll();
-     camera=provider.bindToLifecycle(this,CameraSelector.DEFAULT_BACK_CAMERA,p,capture);applyZoom();
+     ViewPort vp=preview.getViewPort();
+     if(vp==null)throw new IllegalStateException("Preview layout not ready");
+     UseCaseGroup group=new UseCaseGroup.Builder().setViewPort(vp).addUseCase(p).addUseCase(capture).build();
+     camera=provider.bindToLifecycle(this,CameraSelector.DEFAULT_BACK_CAMERA,group);applyZoom();
    }catch(Exception e){Toast.makeText(this,"Camera unavailable",Toast.LENGTH_LONG).show();}},main);
  }
  void applyZoom(){
@@ -55,8 +58,12 @@ public class PhotoActivity extends ComponentActivity {
    ZoomState state=camera.getCameraInfo().getZoomState().getValue();if(state==null)return;
    int token=++generation;float request=wanted;float hw=ZoomMath.hardware(request,state.getMaxZoomRatio());
    ready=false;shutter.setEnabled(false);
+   if(Math.abs(state.getZoomRatio()-hw)<0.00001f && lastRequested==hw && !hardwarePending){
+     extra=ZoomMath.extra(request,state.getZoomRatio());preview.setScaleX(extra);preview.setScaleY(extra);ready=true;shutter.setEnabled(!busy);return;
+   }
+   hardwarePending=true;lastRequested=hw;
    ListenableFuture<Void> f=camera.getCameraControl().setZoomRatio(hw);
-   f.addListener(()->{if(closing||token!=generation)return;try{f.get();ZoomState current=camera.getCameraInfo().getZoomState().getValue();float actual=current==null?hw:current.getZoomRatio();extra=ZoomMath.extra(request,actual);
+   f.addListener(()->{if(closing||token!=generation)return;hardwarePending=false;try{f.get();ZoomState current=camera.getCameraInfo().getZoomState().getValue();float actual=current==null?hw:current.getZoomRatio();extra=ZoomMath.extra(request,actual);
      preview.setScaleX(extra);preview.setScaleY(extra);ready=true;shutter.setEnabled(!busy);
    }catch(Exception e){ready=false;shutter.setEnabled(false);label.setText("Zoom unavailable");}},main);
  }
@@ -93,5 +100,5 @@ public class PhotoActivity extends ComponentActivity {
      values.clear();values.put(MediaStore.Images.Media.IS_PENDING,0);getContentResolver().update(uri,values,null,null);
    }catch(Exception e){getContentResolver().delete(uri,null,null);throw new IOException(e);}finally{if(decoder!=null)decoder.recycle();if(rotated!=null&&rotated!=bitmap)rotated.recycle();if(bitmap!=null)bitmap.recycle();}
  }
- @Override protected void onDestroy(){closing=true;worker.shutdown();super.onDestroy();}
+ @Override protected void onDestroy(){closing=true;super.onDestroy();worker.shutdown();}
 }
