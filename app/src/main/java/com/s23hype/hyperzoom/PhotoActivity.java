@@ -2,7 +2,12 @@ package com.s23hype.hyperzoom;
 import android.Manifest;
 import android.content.ContentValues;
 import android.content.pm.PackageManager;
-import android.graphics.*;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.BitmapRegionDecoder;
+import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
@@ -18,7 +23,7 @@ import java.io.*;
 import java.util.concurrent.*;
 
 public class PhotoActivity extends ComponentActivity {
- PreviewView preview; Camera camera; ImageCapture capture; Button shutter; TextView label;
+ PreviewView preview; androidx.camera.core.Camera camera; ImageCapture capture; Button shutter; TextView label;
  SeekBar slider; float wanted=1,extra=1; int max, generation; boolean busy,ready,closing;
  final ExecutorService worker=Executors.newSingleThreadExecutor();
  final Executor main=command->runOnUiThread(command);
